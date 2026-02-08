@@ -1,0 +1,52 @@
+---
+title: "Parameters, priors, and toggles"
+author: Lucas da Cunha Godoy
+date: 2025-06-26
+format:
+  html:
+    html-math-method: mathjax
+execute:
+  warning: false
+  error: false
+vignette: >
+  %\VignetteIndexEntry{Parameters, priors, and toggles}
+  %\VignetteEngine{quarto::html}
+  %\VignetteEncoding{UTF-8}
+---
+
+The `fit_drm` function is designed to be flexible, allowing different model
+features to be enabled or disabled through a set of toggles. This vignette
+provides a comprehensive guide to the parameters used in the DRM, their meaning,
+the priors they are assigned, and the specific toggles required to activate
+them.
+
+
+### DRM model parameters and priors
+
+The table below details each parameter in the DRM. The "Toggle" column indicates
+the condition needed to include a parameter in the model. If a parameter is not
+activated by its toggle, it is excluded from the model, and its prior is not
+used.
+
+| Parameter  | Code      | Meaning                                       | Toggle                   | Priors                               | Default hyperparameters       |
+|:----------:|:---------:|:---------------------------------------------:|:------------------------:|--------------------------------------|:-----------------------------:|
+| $\beta_t$  | `beta_t`  | Reg. coef. for proba. of absence              | N/A                      | $\mathrm{N}(m_t, s_t)$               | $m_t = 0, s_t = 1$            |
+| $\beta_r$  | `beta_r`  | Reg. coef. for recruitment                    | N/A                      | $\mathrm{N}(m_t, s_t)$               | $m_r = 0, s_r = 1$            |
+| $\phi$     | `phi`     | Dispersion parameter                          | N/A                      | $\mathrm{Gamma}(a_p, b_p)$           | $a_p = 2, b_p = 1$            |
+| $\beta_s$  | `beta_s`  | Reg. coef. for survival                       | `est_surv`               | $\mathrm{N}(m_s, s_s)$               | $m_s = 0, s_s = 1$            |
+| $\xi$      | `xi`      | $\mathrm{logit}(\rho) = \cdots \xi \log(\mu)$ | `rho_mu`                 | ${- \rm LN}(m_lxi, s_lxi)$           | $m_{lxi} = 0, s_{lxi} = 1$    |
+| $\zeta$    | `zeta`    | Prob. of remaining in the same patch          | `movement`               | $\mathrm{Beta}(a_z, b_z)$            | $a_z = .5, b_z = .5$          |
+| $\alpha$   | `alpha`   | AR(1) temporal correlation                    | `ar_re` $\neq$ `"none"`  | $\mathrm{Beta}(a_a, b_a)$            | $a_a = .5, b_a = .5$          |
+| $\sigma_t$ | `sigma_t` | AR(1) conditional SD                          | `ar_re` $\neq$ `"none"`  | $\mathrm{LN}(m_lst, s_lst)$          | $m_{lst} = -2, s_{lst} = .25$ |
+| $z_t$      | `z_t`     | AR(1) random effects                          | `ar_re` $\neq$ `"none"`  | $z_t \sim AR(1)$                     | N/A                           |
+| $\sigma_i$ | `sigma_i` | Patch level iid random effect SD              | `iid_re` $\neq$ `"none"` | $\mathrm{LN}(m_lsi, s_lsi)$          | $m_{lsi} = -2, s_{lsi} = .25$ |
+| $z_i$      | `z_i`     | Patch level iid random effects                | `iid_re` $\neq$ `"none"` | $z_i \sim \mathrm{N}(0, \sigma^2_i)$ | N/A                           |
+| $\sigma_s$ | `sigma_s` | Patch level ICAR random effect SD             | `sp_re` $\neq$ `"none"`  | $\mathrm{LN}(m_lss, s_lss)$          | $m_{lss} = -2, s_{lss} = .25$ |
+| $z_s$      | `z_s`     | Patch level ICAR random effects               | `sp_re` $\neq$ `"none"`  | $z_s \sim \mathrm{N}(0, \sigma^2_i)$ | N/A                           |
+
+
+### SDM
+
+TBD
+
+## References

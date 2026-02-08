@@ -1,0 +1,68 @@
+---
+title: "Densities' initialization"
+author: Lucas da Cunha Godoy
+date: 2025-06-26
+format:
+  html:
+    html-math-method: mathjax
+execute:
+  warning: false
+  error: false
+vignette: >
+  %\VignetteIndexEntry{Densities' initialization}
+  %\VignetteEngine{quarto::html}
+  %\VignetteEncoding{UTF-8}
+---
+
+All model configurations require the initialization of the age-specific
+densities at the first year ($\lambda_{a, 1, i}$). This initialization applies
+to all age classes greater than one ($a > 1$), as the density of the first
+age-class is always determined by the estimated recruitment.
+
+The `drmr` package provides three methods for setting these initial values, each
+controlled by a specific parameter or toggle in the `fit_drm` function. The
+sections below detail each of these options.
+
+
+## User provided densities
+
+This is the most direct method, activated by providing a numeric vector to the
+`init_data` argument in `fit_drm`.
+
+* **How it works:** The user supplies a vector of log-transformed densities of
+  length `n_ages - 1`, corresponding to the initial densities for ages `2`
+  through `n_ages` (total number of age classes).
+  
+* **Limitation:** This method applies the same initial age structure to all
+  patches, which may not capture pre-existing spatial variation.
+  
+## Estimate age-specific initial densities
+
+This option is enabled by setting the `est_init = 1` toggle.
+
+* **How it works:** Instead of requiring fixed inputs, the model treats the
+  initial log-densities for ages `2` through `n_ages` as free parameters to be
+  estimated.
+
+* **Limitation:** Similar to the user-provided option, this method estimates a
+  single set of initial densities that are applied uniformly across all
+  patches. We also caution that this approach can introduce substantial
+  uncertainty, sometimes resulting in very wide prediction intervals.
+
+
+## Estimate age-specific densities from mortality rates
+
+This dynamic approach is activated by setting the `minit = 1` toggle. It is
+particularly useful when external, age-specific mortality data is available.
+
+* **How it works:** This method assumes the population was at a stable age
+  distribution just before the first year of observation. It uses the model's
+  estimated (or externally provided) mortality and recruitment rates to
+  reconstruct the initial age-specific densities for each patch.
+
+Unlike the other methods, this allows the initial age structure to vary
+spatially across patches, reflecting local differences in estimated recruitment
+and survival rates.
+
+
+## References

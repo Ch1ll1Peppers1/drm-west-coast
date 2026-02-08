@@ -1,0 +1,860 @@
+---
+title: "Examples"
+author: Lucas da Cunha Godoy
+format:
+  html:
+    html-math-method: mathjax
+bibliography: [notes.bib, zim.bib]
+vignette: >
+  %\VignetteIndexEntry{Examples}
+  %\VignetteEngine{quarto::html}
+  %\VignetteEncoding{UTF-8}
+---
+
+---
+
+## TL; DR {.unnumbered}
+
+This document demonstrates the functionalities of the `drmr` R package for
+fitting Dynamic Range and Species Distribution Models (DRMs and SDMs,
+respectively) using pre-compiled `Stan` models.
+
+
+We'll explore increasingly complex models, showcasing the package's capabilities
+with the help of five additional `R` packages:
+
+* `sf`: for spatial data manipulation and visualization
+* `ggplot2`: for creating graphs
+* `bayesplot`: for visualizing MCMC outputs
+* `dplyr`: for data wrangling
+
+## Installing the `drmr` package {#sec-drmr}
+
+The `drmr` package provides pre-compiled `cmdstanr` [@gabry2024cmdstanr] models
+powered by the `instantiate` package [@landau2024instantiate]. These
+pre-compiled models allow us to make inferences about the DRM (and SDM) using
+`cmdstan` algorithms, such as the HMC NUTS Sampler.
+
+
+The package is not on CRAN yet. To install the version hosted on GitHub, run:
+```{r}
+#| eval: false
+
+remotes::install_github("pinskylab/drmr")
+```
+
+Finally, the code below loads the packages necessary to reproduce the examples
+in this document.
+
+```{r}
+#| label: setup
+
+library(drmr)
+library(sf) ## "mapping"
+library(ggplot2) ## graphs
+library(bayesplot) ## and more graphs
+library(dplyr)
+```
+
+## Data {#sec-data}
+
+For this example, we'll use the package's built-in _Summer flounder_ dataset,
+which resembles the data analyzed in @fredston2025dynamic. We load it by
+running:
+
+```{r}
+#| label: data-load
+
+## loads the data
+data(sum_fl)
+
+## computing density
+sum_fl <- sum_fl |>
+  mutate(dens = 100 * y / area_km2,
+         .before = y)
+```
+
+A quick exploration of the data reveals the following:
+
+* Surface salinity (ssalin) and bottom salinity (bsalin) have missing values
+  (around 30% missing for each).
+
+* At least 25% of the density (`dens`) values are zero.
+
+Finally, we split the data, reserving the last five years for evaluating
+predictions:
+
+```{r}
+#| label: data-split
+
+## 5 years-ahead predictions
+first_year_forecast <- max(sum_fl$year) - 4
+
+first_id_forecast <-
+  first_year_forecast - min(sum_fl$year) + 1
+
+years_all <- order(unique(sum_fl$year))
+years_train <- years_all[years_all < first_id_forecast]
+years_test <- years_all[years_all >= first_id_forecast]
+
+## splitting data
+dat_test <- sum_fl |>
+  filter(year >= first_year_forecast)
+
+dat_train <- sum_fl |>
+  filter(year < first_year_forecast)
+```
+
+
+When fitting models with explanatory variables, it's good practice to
+standardize them by centering (subtracting the mean) and scaling (dividing by
+the standard deviation). This transformation to zero mean and unit variance
+offers two main benefits: it typically improves the efficiency of Monte Carlo
+Markov Chain (MCMC) sampling, and it makes comparing the magnitude of regression
+coefficients easier for assessing relative variable importance. For applications
+involving forecasting or prediction, it is crucial to calculate the mean and
+standard deviation for standardization using only the training dataset. These
+exact same values must then be applied to standardize the test dataset (or any
+future data), simulating the real-world scenario where information about future
+observations is unavailable during model fitting.
+
+
+In that spirit, we center and scale some of our potential explanatory variables as follows:
+
+```{r}
+#| label: center-scale
+
+avgs <- c("stemp" = mean(dat_train$stemp),
+          "btemp" = mean(dat_train$btemp),
+          "depth" = mean(dat_train$depth),
+          "n_hauls" = mean(dat_train$n_hauls),
+          "lat" = mean(dat_train$lat),
+          "lon" = mean(dat_train$lon))
+
+min_year <- dat_train$year |>
+  min()
+
+## centering covariates
+dat_train <- dat_train |>
+  mutate(c_stemp = stemp - avgs["stemp"],
+         c_btemp = btemp - avgs["btemp"],
+         c_hauls = n_hauls - avgs["n_hauls"],
+         c_lat   = lat - avgs["lat"],
+         c_lon   = lon - avgs["lon"],
+         time  = year - min_year)
+
+dat_test <- dat_test |>
+  mutate(c_stemp = stemp - avgs["stemp"],
+         c_btemp = btemp - avgs["btemp"],
+         c_hauls = n_hauls - avgs["n_hauls"],
+         c_lat   = lat - avgs["lat"],
+         c_lon   = lon - avgs["lon"],
+         time  = year - min_year)
+```
+
+
+> For an extensive list of the explanatory variables available on the dataset,
+> run: `?sum_fl`.
+
+
+## Fitting and comparing models
+
+Let's begin by fitting the simplest DRM available, we will call it our
+`baseline`. By default, the simplest `fit_drm` call assumes two age-groups and a
+survival rate of `0.70` between age-classes.
+
+```{r}
+#| label: baseline_mock
+#| eval: false
+
+baseline <-
+  fit_drm(.data = dat_train,
+          y_col    = "dens", ## response variable: density
+          time_col = "year", ## vector of time points
+          site_col = "patch",
+          seed = 202505)
+```
+
+```{r}
+#| label: baseline
+#| eval: false
+#| echo: false
+
+if (instantiate::stan_cmdstan_exists()) {
+  baseline <-
+    fit_drm(.data = dat_train,
+            y_col    = "dens", ## response variable: density
+            time_col = "year", ## vector of time points
+            site_col = "patch",
+            seed = 202505)
+}
+```
+
+This function has many arguments. We need to input at least the following:
+
+* `.data` - a `data.frame`;
+
+* `y_col` - a `character` indicating the name of the column (or variable)
+  storing the response variable in `.data`.
+
+* `time_col` - a `character` indicating the name of the column (or variable)
+  storing the time variable in `.data`.
+
+* `site_col` - a `character` indicating the name of the column (or variable)
+  storing the site variable in `.data`.
+  
+* `seed` - a `integer` corresponding to a seed for random number
+  generation. This parameter helps to ensure reproducibility.
+
+
+Moreover, the output of a `fit_drm` call results in a named list. Its most
+important element is the `stanfit`, which is equivalent to the output of
+[https://mc-stan.org/cmdstanr/reference/model-method-sample.html](`sample()`). The
+remaining additional elements are useful for calculating predictions.
+
+
+It is more interesting to have the expected density and probabilities of absence
+varying according to environmental variables. To achieve that, we input formulas
+to the `formula_zero` and `formula_rec` arguments. The specific call to
+`fit_drm` is as follows:
+
+```{r}
+#| label: simplest_fit_mock
+#| eval: false
+
+drm_1 <-
+  fit_drm(.data = dat_train,
+          y_col = "dens",
+          time_col = "year",
+          site_col = "patch",
+          seed = 202505,
+          formula_zero = ~ 1 + c_hauls + c_btemp + c_stemp,
+          formula_rec = ~ 1 + c_stemp + I(c_stemp * c_stemp),
+          init = "cmdstan_default")
+```
+
+```{r}
+#| label: simplest_fit
+#| eval: false
+#| echo: false
+
+if (instantiate::stan_cmdstan_exists()) {
+  drm_1 <-
+    fit_drm(.data = dat_train,
+            y_col = "dens",
+            time_col = "year",
+            site_col = "patch",
+            seed = 202505,
+            formula_zero = ~ 1 + c_hauls + c_btemp + c_stemp,
+            formula_rec = ~ 1 + c_stemp + I(c_stemp * c_stemp),
+            init = "cmdstan_default")
+}
+```
+
+
+
+In this call we also introduce the `init` argument. This argument controls how
+the MCMC algorithm is initialized. There are three different initialization
+options:
+
+* `"cmdstan_default"`: the default initialization method in `cmdstan`.
+
+* `"prior"`: Initializes the parameters with samples from their prior
+  distributions.
+  
+* `"pathfinder"`: Uses the Pathfinder algorithm [@zhang2022pathfinder] for the
+  initialization.
+
+For further info, see `?fit_drm`.
+
+
+We can easily fit several models to a specific dataset, exploring different
+features and increasing levels of complexity. The simplest model was the
+`baseline`. Building upon this, `drm_1` introduced specific covariate effects,
+modeling recruitment as a quadratic function of Sea Surface Temperature (SST)
+and the probability of absence as dependent on the number of hauls, SST, and Sea
+Bottom Temperature (SBT). 
+
+
+In the code chunk below, model `drm_2` adds the estimation of a constant
+survival rate to the features of `drm_1`. Subsequently, `drm_3` incorporated an
+AR(1) temporal autocorrelation process for recruitment based on `drm_2`. Several
+variations are then built upon `drm_3`. Model `drm_4` introduces spatial
+movement dynamics and increased the number of age classes to six. In contrast,
+`drm_5` also increases the age classes to six but does not include
+movement. Model `drm_6` adds age-specific fishing mortality rates for 16
+distinct age classes at each time point. Another variant, `drm_7`, modifies the
+`drm_3` structure: it retains the same formulation for the probability of
+absence but models recruitment with an AR(1) process that is constant across
+patches, and makes survival dependent on SBT.
+
+
+Finally, for comparison, to a different class of model, `sdm`, was fitted. This
+was specified as a zero-augmented Gamma SDM where the absence probability
+component followed the structure used in `drm_3`, and the conditional density
+(for positive observations) was modeled as a quadratic function of SST.
+
+
+```{r}
+#| label: drms_moc
+#| eval: false
+
+drm_2 <-
+  fit_drm(.data = dat_train,
+          y_col = "dens", ## response variable: density
+          time_col = "year", ## vector of time points
+          site_col = "patch",
+          seed = 202505,
+          formula_zero = ~ 1 + c_hauls + c_btemp + c_stemp,
+          formula_rec = ~ 1 + c_stemp + c_stemp * c_stemp,
+          formula_surv = ~ 1,
+          m = 0,
+          .toggles = list(est_surv = 1))
+
+drm_3 <-
+  fit_drm(.data = dat_train,
+          y_col = "dens", ## response variable: density
+          time_col = "year", ## vector of time points
+          site_col = "patch",
+          seed = 202505,
+          formula_zero = ~ 1 + c_hauls + c_btemp + c_stemp,
+          formula_rec = ~ 1 + c_stemp + I(c_stemp * c_stemp),
+          formula_surv = ~ 1,
+          .toggles = list(est_surv = 1,
+                          ar_re = "rec"))
+## loading map
+map_name <- system.file("maps/sum_fl.shp", package = "drmr")
+
+polygons <- st_read(map_name)
+
+adj_mat <- gen_adj(st_buffer(st_geometry(polygons),
+                             dist = 2500))
+
+## row-standardized matrix
+adj_mat <-
+  t(apply(adj_mat, 1, \(x) x / (sum(x))))
+
+drm_4 <-
+  fit_drm(.data = dat_train,
+          y_col = "dens", ## response variable: density
+          time_col = "year", ## vector of time points
+          site_col = "patch",
+          family = "gamma",
+          seed = 202505,
+          formula_zero = ~ 1 + c_hauls + c_btemp + c_stemp,
+          formula_rec = ~ 1 + c_stemp + I(c_stemp * c_stemp),
+          formula_surv = ~ 1,
+          n_ages = 6,
+          adj_mat = adj_mat, ## A matrix for movement routine
+          ages_movement = c(0, 0, 1, 1, 1, 0), ## ages allowed to move
+          .toggles = list(est_surv = 1,
+                          ar_re = "rec",
+                          movement = 1))
+
+drm_5 <-
+  fit_drm(.data = dat_train,
+          y_col = "dens", ## response variable: density
+          time_col = "year", ## vector of time points
+          site_col = "patch",
+          family = "gamma",
+          seed = 202505,
+          formula_zero = ~ 1 + c_hauls + c_btemp + c_stemp,
+          formula_rec = ~ 1 + c_stemp + I(c_stemp * c_stemp),
+          formula_surv = ~ 1,
+          n_ages = 6,
+          .toggles = list(est_surv = 1,
+                          ar_re = "rec"))
+
+## instantaneous fishing mortality rates
+fmat <-
+  system.file("fmat.rds", package = "drmr") |>
+  readRDS()
+
+f_train <- fmat[, years_train]
+f_test  <- fmat[, years_test]
+
+drm_6 <-
+  fit_drm(.data = dat_train,
+          y_col = "dens", ## response variable: density
+          time_col = "year", ## vector of time points
+          site_col = "patch",
+          family = "gamma",
+          seed = 202505,
+          formula_zero = ~ 1 + c_hauls + c_btemp + c_stemp,
+          formula_rec = ~ 1 + c_stemp + I(c_stemp * c_stemp),
+          formula_surv = ~ 1,
+          n_ages = NROW(f_train),
+          f_mort = f_train,
+          .toggles = list(ar_re = "rec",
+                          est_surv = 1))
+
+drm_7 <-
+  fit_drm(.data = dat_train,
+          y_col = "dens", ## response variable: density
+          time_col = "year", ## vector of time points
+          site_col = "patch",
+          family = "gamma",
+          seed = 202505,
+          formula_zero = ~ 1 + c_hauls + c_btemp + c_stemp,
+          formula_rec = ~ 1,
+          formula_surv = ~ 1 + c_btemp + I(c_btemp * c_btemp),
+          .toggles = list(ar_re = "rec",
+                          est_surv = 1))
+
+sdm <-
+  fit_sdm(.data = dat_train,
+          y_col = "dens", ## response variable: density
+          time_col = "year", ## vector of time points
+          site_col = "patch",
+          seed = 202505,
+          formula_zero = ~ 1 + c_hauls + c_btemp + c_stemp,
+          formula_dens = ~ 1 + c_stemp + I(c_stemp * c_stemp),
+          .toggles = list(ar_re = "rec"))
+```
+
+```{r}
+#| label: drms
+#| eval: false
+#| echo: false
+
+if (instantiate::stan_cmdstan_exists()) {
+drm_2 <-
+  fit_drm(.data = dat_train,
+          y_col = "dens", ## response variable: density
+          time_col = "year", ## vector of time points
+          site_col = "patch",
+          seed = 202505,
+          formula_zero = ~ 1 + c_hauls + c_btemp + c_stemp,
+          formula_rec = ~ 1 + c_stemp + c_stemp * c_stemp,
+          formula_surv = ~ 1,
+          m = 0,
+          .toggles = list(est_surv = 1))
+
+drm_3 <-
+  fit_drm(.data = dat_train,
+          y_col = "dens", ## response variable: density
+          time_col = "year", ## vector of time points
+          site_col = "patch",
+          seed = 202505,
+          formula_zero = ~ 1 + c_hauls + c_btemp + c_stemp,
+          formula_rec = ~ 1 + c_stemp + I(c_stemp * c_stemp),
+          formula_surv = ~ 1,
+          .toggles = list(est_surv = 1,
+                          ar_re = "rec"))
+
+## loading map
+map_name <- system.file("maps/sum_fl.shp", package = "drmr")
+
+polygons <- st_read(map_name)
+
+adj_mat <- gen_adj(st_buffer(st_geometry(polygons),
+                             dist = 2500))
+
+## row-standardized matrix
+adj_mat <-
+  t(apply(adj_mat, 1, \(x) x / (sum(x))))
+
+drm_4 <-
+  fit_drm(.data = dat_train,
+          y_col = "dens", ## response variable: density
+          time_col = "year", ## vector of time points
+          site_col = "patch",
+          family = "gamma",
+          seed = 202505,
+          formula_zero = ~ 1 + c_hauls + c_btemp + c_stemp,
+          formula_rec = ~ 1 + c_stemp + I(c_stemp * c_stemp),
+          formula_surv = ~ 1,
+          n_ages = 6,
+          adj_mat = adj_mat, ## A matrix for movement routine
+          ages_movement = c(0, 0, 1, 1, 1, 0), ## ages allowed to move
+          .toggles = list(est_surv = 1,
+                          ar_re = "rec",
+                          movement = 1))
+
+drm_5 <-
+  fit_drm(.data = dat_train,
+          y_col = "dens", ## response variable: density
+          time_col = "year", ## vector of time points
+          site_col = "patch",
+          family = "gamma",
+          seed = 202505,
+          formula_zero = ~ 1 + c_hauls + c_btemp + c_stemp,
+          formula_rec = ~ 1 + c_stemp + I(c_stemp * c_stemp),
+          formula_surv = ~ 1,
+          n_ages = 6,
+          .toggles = list(est_surv = 1,
+                          ar_re = "rec"))
+
+## instantaneous fishing mortality rates
+fmat <-
+  system.file("fmat.rds", package = "drmr") |>
+  readRDS()
+
+f_train <- fmat[, years_train]
+f_test  <- fmat[, years_test]
+
+drm_6 <-
+  fit_drm(.data = dat_train,
+          y_col = "dens", ## response variable: density
+          time_col = "year", ## vector of time points
+          site_col = "patch",
+          family = "gamma",
+          seed = 202505,
+          formula_zero = ~ 1 + c_hauls + c_btemp + c_stemp,
+          formula_rec = ~ 1 + c_stemp + I(c_stemp * c_stemp),
+          formula_surv = ~ 1,
+          n_ages = NROW(f_train),
+          f_mort = f_train,
+          .toggles = list(ar_re = "rec",
+                          est_surv = 1))
+
+drm_7 <-
+  fit_drm(.data = dat_train,
+          y_col = "dens", ## response variable: density
+          time_col = "year", ## vector of time points
+          site_col = "patch",
+          family = "gamma",
+          seed = 202505,
+          formula_zero = ~ 1 + c_hauls + c_btemp + c_stemp,
+          formula_rec = ~ 1,
+          formula_surv = ~ 1 + c_btemp + I(c_btemp * c_btemp),
+          .toggles = list(ar_re = "rec",
+                          est_surv = 1))
+
+sdm <-
+  fit_sdm(.data = dat_train,
+          y_col = "dens", ## response variable: density
+          time_col = "year", ## vector of time points
+          site_col = "patch",
+          seed = 202505,
+          formula_zero = ~ 1 + c_hauls + c_btemp + c_stemp,
+          formula_dens = ~ 1 + c_stemp + I(c_stemp * c_stemp),
+          .toggles = list(ar_re = "rec"))
+}
+```
+
+
+
+To compare models goodness-of-fit we use the `loo` package, which implements the
+Leave-One-Out Information Criterion [LOOIC, @vehtari2017practical]. First, we
+create a list with the LOOIC for each model, and then compare them using the
+`loo_compare` function:
+
+```{r}
+#| label: loo_mock
+#| eval: false
+
+loos <- list("baseline" = baseline$stanfit$loo(),
+             "drm_1" = drm_1$stanfit$loo(),
+             "drm_2" = drm_2$stanfit$loo(),
+             "drm_3" = drm_3$stanfit$loo(),
+             "drm_4" = drm_4$stanfit$loo(),
+             "drm_5" = drm_5$stanfit$loo(),
+             "drm_6" = drm_6$stanfit$loo(),
+             "drm_7" = drm_7$stanfit$loo(),
+             "sdm"   = sdm$stanfit$loo())
+
+loos_out <- loo::loo_compare(loos)
+```
+
+```{r}
+#| label: loo
+#| eval: false
+#| echo: false
+
+if (instantiate::stan_cmdstan_exists()) {
+  loos <- list("baseline" = baseline$stanfit$loo(),
+               "drm_1" = drm_1$stanfit$loo(),
+               "drm_2" = drm_2$stanfit$loo(),
+               "drm_3" = drm_3$stanfit$loo(),
+               "drm_4" = drm_4$stanfit$loo(),
+               "drm_5" = drm_5$stanfit$loo(),
+               "drm_6" = drm_6$stanfit$loo(),
+               "drm_7" = drm_7$stanfit$loo(),
+               "sdm"   = sdm$stanfit$loo())
+
+  loos_out <- loo::loo_compare(loos)
+}
+```
+
+
+The `loo_compare` outputs a table with the difference between the LOOIC from the
+best model (in terms of LOOIC as a goodness-of-fit metric) to each of the models
+and orders those differences from "best" to "worst" fit.
+
+
+The model with the best goodness-of-fit does not necessarily delivers the best
+predictions (or forecasts). The forecasts for each model are easily computed
+through the `predict_drm` (or `predict_sdm`, if applied to the output of
+`fit_sdm`) function. See below.
+
+```{r}
+#| label: forecasts_mock
+#| eval: false
+
+forecast_0 <- predict_drm(drm = baseline,
+                          new_data = dat_test,
+                          seed = 125,
+                          cores = 4)
+
+forecast_1 <- predict_drm(drm = drm_1,
+                          new_data = dat_test,
+                          seed = 125,
+                          cores = 4)
+
+forecast_2 <- predict_drm(drm = drm_2,
+                          new_data = dat_test,
+                          past_data = filter(dat_train,
+                                             year == max(year)),
+                          seed = 125,
+                          cores = 4)
+
+forecast_3 <- predict_drm(drm = drm_3,
+                          new_data = dat_test,
+                          past_data = filter(dat_train,
+                                             year == max(year)),
+                          seed = 125,
+                          cores = 4)
+
+forecast_4 <- predict_drm(drm = drm_4,
+                          new_data = dat_test,
+                          past_data = filter(dat_train,
+                                             year == max(year)),
+                          seed = 125,
+                          cores = 4)
+
+forecast_5 <- predict_drm(drm = drm_5,
+                          new_data = dat_test,
+                          past_data = filter(dat_train,
+                                             year == max(year)),
+                          seed = 125,
+                          cores = 4)
+
+forecast_6 <- predict_drm(drm = drm_6,
+                          new_data = dat_test,
+                          past_data = filter(dat_train,
+                                             year == max(year)),
+                          f_test = f_test,
+                          seed = 125,
+                          cores = 4)
+
+forecast_7 <- predict_drm(drm = drm_7,
+                          new_data = dat_test,
+                          past_data = filter(dat_train,
+                                             year == max(year)),
+                          seed = 125,
+                          cores = 4)
+
+forecast_sdm <-
+  predict_sdm(sdm = sdm,
+              new_data = dat_test,
+              seed = 125,
+              cores = 4)
+
+##--- summarizing forecasts ----
+
+all_forecasts <-
+  ls(pattern = "^forecast_")
+all_drms <-
+  ls(pattern = "^(baseline|drm_|sdm)")
+
+forecasts_summary <-
+  Map(f = \(x, nm) {
+    fct <- get(x)
+    fct$draws(variables = "y_proj",
+              format = "draws_df") |>
+      tidyr::pivot_longer(cols = starts_with("y_proj"),
+                          names_to = "pair",
+                          values_to = "expected") |>
+      group_by(pair) |>
+      summarise(ll = quantile(expected, probs = .05),
+                l = quantile(expected, probs = .1),
+                m = median(expected),
+                u = quantile(expected, probs = .9),
+                uu = quantile(expected, probs = .95)) |>
+      ungroup() |>
+      mutate(pair = gsub("\\D", "", pair)) |>
+      mutate(pair = as.integer(pair)) |>
+      arrange(pair) |>
+      mutate(model = nm,
+             .before = 1)
+  }, x = all_forecasts, nm = all_drms)
+
+forecasts_summary <-
+  bind_rows(forecasts_summary)
+
+forecasts_summary <-
+  dat_test |>
+  select(dens, lat_floor, patch, year) |>
+  mutate(pair = row_number()) |>
+  left_join(forecasts_summary, by = "pair")
+```
+
+```{r}
+#| label: forecasts
+#| eval: false
+#| echo: false
+
+if (instantiate::stan_cmdstan_exists()) {
+  forecast_0 <- predict_drm(drm = baseline,
+                            new_data = dat_test,
+                            seed = 125,
+                            cores = 4)
+
+  forecast_1 <- predict_drm(drm = drm_1,
+                            new_data = dat_test,
+                            seed = 125,
+                            cores = 4)
+
+  forecast_2 <- predict_drm(drm = drm_2,
+                            new_data = dat_test,
+                            past_data = filter(dat_train,
+                                               year == max(year)),
+                            seed = 125,
+                            cores = 4)
+
+  forecast_3 <- predict_drm(drm = drm_3,
+                            new_data = dat_test,
+                            past_data = filter(dat_train,
+                                               year == max(year)),
+                            seed = 125,
+                            cores = 4)
+
+  forecast_4 <- predict_drm(drm = drm_4,
+                            new_data = dat_test,
+                            past_data = filter(dat_train,
+                                               year == max(year)),
+                            seed = 125,
+                            cores = 4)
+
+  forecast_5 <- predict_drm(drm = drm_5,
+                            new_data = dat_test,
+                            past_data = filter(dat_train,
+                                               year == max(year)),
+                            seed = 125,
+                            cores = 4)
+
+  forecast_6 <- predict_drm(drm = drm_6,
+                            new_data = dat_test,
+                            past_data = filter(dat_train,
+                                               year == max(year)),
+                            f_test = f_test,
+                            seed = 125,
+                            cores = 4)
+
+  forecast_7 <- predict_drm(drm = drm_7,
+                            new_data = dat_test,
+                            past_data = filter(dat_train,
+                                               year == max(year)),
+                            seed = 125,
+                            cores = 4)
+
+  forecast_sdm <-
+    predict_sdm(sdm = sdm,
+                new_data = dat_test,
+                seed = 125,
+                cores = 4)
+
+  ##--- summarizing forecasts ----
+
+  all_forecasts <-
+    ls(pattern = "^forecast_")
+  all_drms <-
+    ls(pattern = "^(baseline|drm_|sdm)")
+
+  forecasts_summary <-
+    Map(f = \(x, nm) {
+      fct <- get(x)
+      fct$draws(variables = "y_proj",
+                format = "draws_df") |>
+        tidyr::pivot_longer(cols = starts_with("y_proj"),
+                            names_to = "pair",
+                            values_to = "expected") |>
+        group_by(pair) |>
+        summarise(ll = quantile(expected, probs = .05),
+                  l = quantile(expected, probs = .1),
+                  m = median(expected),
+                  u = quantile(expected, probs = .9),
+                  uu = quantile(expected, probs = .95)) |>
+        ungroup() |>
+        mutate(pair = gsub("\\D", "", pair)) |>
+        mutate(pair = as.integer(pair)) |>
+        arrange(pair) |>
+        mutate(model = nm,
+               .before = 1)
+    }, x = all_forecasts, nm = all_drms)
+
+  forecasts_summary <-
+    bind_rows(forecasts_summary)
+
+  forecasts_summary <-
+    dat_test |>
+    select(dens, lat_floor, patch, year) |>
+    mutate(pair = row_number()) |>
+    left_join(forecasts_summary, by = "pair")
+}
+```
+
+
+
+Now, we display the comparisons of Goodness-of-fit and predictive skill. In that
+table, $\Delta$-LOOIC represents the difference between the LOOIC and the model
+with the best fit; RMSE is the root mean square error of prediction; IS is the
+interval score; PIC is the frequentist coverage of the 80% prediction intervals;
+and Time is the time (in seconds) to fit the models.
+
+```{r}
+#| label: assess
+#| eval: false
+
+forecasts_summary |>
+  mutate(bias = dens - m) |>
+  mutate(rmse = bias * bias) |>
+  mutate(is = int_score(dens, l = l, u = u, alpha = .2)) |>
+  mutate(cvg = 100 * dplyr::between(dens, l, u)) |>
+  ungroup() |>
+  group_by(model) |>
+  summarise(across(rmse:cvg, mean)) |>
+  ungroup() |>
+  rename_all(toupper) |>
+  rename("Model" = "MODEL",
+         "IS (80%)" = "IS",
+         "PIC (80%)" = "CVG") |>
+  left_join(aux_qt,
+            by = "Model") |>
+  arrange(desc(LOOIC)) |>
+  relocate(LOOIC, .after = "Model")
+```
+
+
+| Model      | $\Delta$-LOOIC |     RMSE |       IS |      PIC |     Time |
+|:-----------|---------------:|---------:|---------:|---------:|---------:|
+| `drm_3`    |       **0.00** |     8.98 | **8.60** | **78.0** |    13.34 |
+| `sdm`      |          -6.07 |    12.04 |    12.72 |     60.0 |     3.88 |
+| `drm_4`    |          -7.35 |     8.30 |     8.87 |     84.0 |    28.70 |
+| `drm_5`    |          -7.74 | **8.23** |     8.96 |     86.0 |    19.24 |
+| `drm_7`    |         -10.41 |     8.75 |     8.97 |     78.0 |    22.73 |
+| `drm_6`    |         -18.04 |    10.22 |    10.49 |     86.0 |    33.73 |
+| `drm_1`    |         -22.49 |    11.17 |    10.68 |     68.0 |     4.67 |
+| `drm_2`    |         -32.32 |    10.73 |    10.29 |     68.0 |     4.44 |
+| `baseline` |        -163.85 |    14.44 |    12.98 |     74.0 | **1.35** |
+
+
+Despite having the second-best model fit based on LOOIC, the SDM yielded the
+second-worst predictive performance according to RMSE and IS. This suggests the
+DRM's mechanistic formulation enhances forecasting ability, potentially
+outweighing a slightly less optimal fit statistic. This is understandable, as
+DRMs incorporate biologically-informed constraints that can improve predictions.
+
+## Coming soon
+
+We are working on the following additional vignettes:
+
+* priors used in our models and how to modify them
+
+* toggles and their specific options
+
+* Initialization of the population dynamics
+
+
+## References

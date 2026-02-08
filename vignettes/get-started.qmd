@@ -1,0 +1,171 @@
+---
+title: "Get Started"
+author: Lucas da Cunha Godoy
+bibliography: [notes.bib, zim.bib]
+execute:
+  eval: true
+vignette: >
+  %\VignetteIndexEntry{Get Started}
+  %\VignetteEngine{quarto::html}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r}
+#| label: setup
+
+library(drmr)
+library(sf) ## "mapping"
+library(ggplot2) ## graphs
+library(bayesplot) ## and more graphs
+library(dplyr)
+```
+
+We will use a dataset included with the package. In particular, this data is
+similar to the one analyzed in @fredston2025dynamic. To load the data, we run:
+
+```{r}
+#| label: data
+data(sum_fl)
+```
+
+## Data processing & splitting
+
+To assess model predictions, the chunk below splits the data into train and
+test.
+
+```{r}
+#| label: split
+## 5 years-ahead predictions
+first_year_forecast <- max(sum_fl$year) - 5
+
+first_id_forecast <-
+  first_year_forecast - min(sum_fl$year) + 1
+
+years_all <- length(unique(sum_fl$year))
+years_train <- years_all[years_all < first_id_forecast]
+years_test <- years_all[years_all >= first_id_forecast]
+
+## splitting data
+dat_test <- sum_fl |>
+  filter(year >= first_year_forecast)
+
+dat_train <- sum_fl |>
+  filter(year < first_year_forecast)
+```
+
+Finally, I transform our response variable into a density.
+
+```{r}
+#| label: ytransform
+dat_train <- dat_train |>
+  mutate(dens = y / area_km2,
+         .before = y)
+
+dat_test <- dat_test |>
+  mutate(dens = y / area_km2,
+         .before = y)
+```
+
+The elements we need to fit a DRM are:
+
+* A response variable representing a density
+
+* A variable encoding time-points
+
+* A variable encoding patches (or sites).
+
+The current version of the functions assumes that we have rows in the dataset
+for every combinations of "time" and "site". That is, if a dataset comprises
+observations around the density of a given species across 20 years and 10
+patches, we expect to have 20 rows in the dataset per patch. Equivalently, we
+would expect 10 rows in the dataset per year.
+
+
+The first and last 10 rows of the `dat_train` object look as follows:
+
+```{r}
+#| label: data-format
+
+head(dat_train[, c("year", "patch",  "y", "stemp")],
+     n = 10)
+tail(dat_train[, c("year", "patch",  "y", "stemp")],
+     n = 10)
+```
+
+Note that, `stemp` is an explanatory variable denoting the sea surface
+temperature (SST).
+
+## Fitting & diagnosing a model
+
+Provided the dataset is properly formatted, a simple model considering the
+existance of `8` age groups and a natural mortality rate of `0.25` can be fit as
+follows:
+
+```{r}
+#| label: fit_drm_mock
+#| eval: false
+mcmc_samples <-
+  fit_drm(.data = dat_train,
+          y_col = "dens",
+          time_col = "year",
+          site_col = "patch",
+          n_ages = 8,
+          m = 0.25,
+          seed = 2025)
+```
+
+```{r}
+#| label: fit_drm
+#| echo: false
+
+if (instantiate::stan_cmdstan_exists()) {
+  mcmc_samples <-
+    fit_drm(.data = dat_train,
+            y_col = "dens",
+            time_col = "year",
+            site_col = "patch",
+            n_ages = 8,
+            m = 0.25,
+            seed = 2025)
+}
+```
+
+
+
+The `mcmc_samples` object is a named list. One of its positions is called
+`stanfit`. We can use the `stanfit` position as if it was the output of a
+`cmdstanr` model. For instance, to assess the convergence of the MCMC, one can
+run:
+```{r}
+#| label: traceplot_mock
+#| fig-alt: "MCMC diagnostic plots for the DRM, arranged in two columns and
+#| three rows. The left column displays trace plots for four parallel MCMC
+#| chains, assessing convergence. The right column displays the estimated
+#| posterior density plots for each parameter, assessing mixing. Row 1:
+#| sigma_obs parameter; Row 2: coef_t parameter; Row 3: coef_r parameter. All
+#| parameters show evidence of good chain convergence and mixing."
+#| eval: false
+mcmc_samples$stanfit$draws(variables = c("phi",
+                                         "beta_t",
+                                         "beta_r")) |>
+  mcmc_combo(combo = c("trace", "dens_overlay"),
+             facet_args = list(labeller = label_parsed))
+```
+
+```{r}
+#| label: traceplot
+#| fig-alt: "MCMC diagnostic plots for the DRM, arranged in two columns and
+#| three rows. The left column displays trace plots for four parallel MCMC
+#| chains, assessing convergence. The right column displays the estimated
+#| posterior density plots for each parameter, assessing mixing. Row 1:
+#| sigma_obs parameter; Row 2: coef_t parameter; Row 3: coef_r parameter. All
+#| parameters show evidence of good chain convergence and mixing."
+#| echo: false
+if (instantiate::stan_cmdstan_exists()) {
+  mcmc_samples$stanfit$draws(variables = c("phi",
+                                           "beta_t",
+                                           "beta_r")) |>
+    mcmc_combo(combo = c("trace", "dens_overlay"),
+               facet_args = list(labeller = label_parsed))
+}
+```
